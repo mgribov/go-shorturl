@@ -2,11 +2,6 @@ package main
 
 import (
     "net/http"
-    //"log"
-    //"strings"
-    //"bufio"
-    //"sync"
-    //"time"
     "math/rand"
     "github.com/garyburd/redigo/redis"
     "flag"
@@ -45,7 +40,6 @@ func RandStringBytes(n int, pool *redis.Pool) string {
     existingUrl := <-xh
 
     if existingUrl != "" {
-        //log.Println("hash " + hash + " already exists, url: " + existingUrl)
         return RandStringBytes(n, pool)
     }
 
@@ -107,9 +101,6 @@ func (h *Redirect) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     xh := make(chan string)
     go find(hash, redisPool, xh)
     url := <-xh
-
-    //w.Header().Add("Content-Type", "application/json")
-    //json.NewEncoder(w).Encode(map[string]interface{}{ "url": url})
 
     http.Redirect(w, r, url, 301)
 
