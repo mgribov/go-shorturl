@@ -15,6 +15,7 @@ const (
 
 var (
     redisAddress   = flag.String("redis-address", "127.0.0.1:6379", "Address to the Redis server")
+    redisPrefix   = flag.String("redis-prefix", "shorturl:", "Prefix for redis storage")
     maxConnections = flag.Int("max-connections", 10, "Max connections to Redis")
     httpListen = flag.String("http-listen", ":8080", "HTTP listen string")
 )
@@ -46,9 +47,11 @@ func RandStringBytes(n int, pool *redis.Pool) string {
     return hash
 }
 
-func find(key string, pool *redis.Pool, ch chan string) {
+func find(hash string, pool *redis.Pool, ch chan string) {
     c := pool.Get()
     defer c.Close()
+
+    key := *redisPrefix + hash
 
     value, err := redis.String(c.Do("GET", key))
 
@@ -72,13 +75,15 @@ func create(url string, pool *redis.Pool, ch chan string) {
     if hash == "" {
         hash = RandStringBytes(6, pool)
 
+        key := *redisPrefix + hash
+
         // @todo redis pipelining
         // @todo make sure its actually recorded
 
-        c.Do("SET", hash, url)
+        c.Do("SET", key, url)
 
         // record the opposite for quick check
-        c.Do("SET", url, hash)
+        c.Do("SET", url, key)
     }
 
     ch <- hash
