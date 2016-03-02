@@ -2,15 +2,18 @@ package main
 
 import (
     "net/http"
-    "math/rand"
     "github.com/garyburd/redigo/redis"
     "flag"
     "encoding/json"
+    "crypto/sha256"
+    "fmt"
+    //"log"
 )
 
 const (
     letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ123456790"
     PARAM = "u"
+    SECRET = "s"
 )
 
 var (
@@ -18,6 +21,7 @@ var (
     redisPrefix   = flag.String("redis-prefix", "shorturl:", "Prefix for redis storage")
     maxConnections = flag.Int("max-connections", 10, "Max connections to Redis")
     httpListen = flag.String("http-listen", ":8080", "HTTP listen string")
+    secret = flag.String("secret", "secret", "Secret string to use when calling /new?s=<secret>&u=<url>")
 )
 
 type (
@@ -25,27 +29,6 @@ type (
     NewMapping struct {}
 )
 
-func RandStringBytes(n int, pool *redis.Pool) string {
-    // http://stackoverflow.com/questions/22892120/how-to-generate-a-random-string-of-a-fixed-length-in-golang
-
-    b := make([]byte, n)
-    for i := range b {
-        b[i] = letterBytes[rand.Int63() % int64(len(letterBytes))]
-    }
-
-    hash := string(b)
-
-    // check if this hash was already used
-    xh := make(chan string)
-    go find(hash, pool, xh)
-    existingUrl := <-xh
-
-    if existingUrl != "" {
-        return RandStringBytes(n, pool)
-    }
-
-    return hash
-}
 
 func find(hash string, pool *redis.Pool, ch chan string) {
     c := pool.Get()
@@ -67,23 +50,21 @@ func create(url string, pool *redis.Pool, ch chan string) {
     c := pool.Get()
     defer c.Close()
 
+    // @todo sort the url params to save some space
+    hash := fmt.Sprintf("%x", sha256.Sum256([]byte(url)))[:6]
+
     // check if this url already exists
     xh := make(chan string)
-    go find(url, pool, xh)
-    hash := <-xh
+    go find(hash, pool, xh)
+    stored_url := <-xh
 
-    if hash == "" {
-        hash = RandStringBytes(6, pool)
 
+    if stored_url == "" {
         key := *redisPrefix + hash
 
         // @todo redis pipelining
         // @todo make sure its actually recorded
-
         c.Do("SET", key, url)
-
-        // record the opposite for quick check
-        c.Do("SET", url, key)
     }
 
     ch <- hash
@@ -114,33 +95,43 @@ func (h *Redirect) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 
 func (h *NewMapping) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-    redisPool := redis.NewPool(func() (redis.Conn, error) {
-        c, err := redis.Dial("tcp", *redisAddress)
-
-        if err != nil {
-            return nil, err
-        }
-
-        return c, err
-    }, *maxConnections)
-
     args := r.URL.Query()
+
+    s := args[SECRET][0]
     url := args[PARAM][0]
 
-    xh := make(chan string)
-    go create(url, redisPool, xh)
-    hash := <-xh
+    if s == *secret {
 
-    w.Header().Add("Content-Type", "application/json")
+        redisPool := redis.NewPool(func() (redis.Conn, error) {
+            c, err := redis.Dial("tcp", *redisAddress)
 
-    if hash != "" {
-        json.NewEncoder(w).Encode(map[string]interface{}{ "hash": hash})
+            if err != nil {
+                return nil, err
+            }
+
+            return c, err
+        }, *maxConnections)
+
+
+        xh := make(chan string)
+        go create(url, redisPool, xh)
+        hash := <-xh
+
+        w.Header().Add("Content-Type", "application/json")
+
+        if hash != "" {
+            json.NewEncoder(w).Encode(map[string]interface{}{ "hash": hash})
+
+        } else {
+            json.NewEncoder(w).Encode(map[string]interface{}{ "error": "cannot create new entry for: " + url})
+        }
+
+        defer redisPool.Close()
 
     } else {
-        json.NewEncoder(w).Encode(map[string]interface{}{ "error": "cannot create new entry for: " + url})
+        w.Header().Add("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{ "error": "cannot create new entry, invalid secret"})
     }
-
-    defer redisPool.Close()
 }
 
 func main() {
